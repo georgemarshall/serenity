@@ -1393,7 +1393,7 @@ impl<'de> Deserialize<'de> for GatewayEvent {
             .map_err(DeError::custom)?;
 
         Ok(match op {
-            OpCode::Event => {
+            OpCode::Dispatch => {
                 let s = map.remove("s")
                     .ok_or_else(|| DeError::custom("expected gateway event sequence"))
                     .and_then(u64::deserialize)

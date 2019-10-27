@@ -49,7 +49,7 @@ impl WebSocketGatewayClientExt for WsClient {
         debug!("[Shard {:?}] Requesting member chunks", shard_info);
 
         self.send_json(&json!({
-            "op": OpCode::GetGuildMembers.num(),
+            "op": OpCode::RequestGuildMembers.num(),
             "d": {
                 "guild_id": guild_ids.into_iter().map(|x| x.as_ref().0).collect::<Vec<u64>>(),
                 "limit": limit.unwrap_or(0),

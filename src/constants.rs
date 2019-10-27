@@ -67,7 +67,7 @@ pub static JOIN_MESSAGES: &'static [&'static str] = &[
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub enum OpCode {
     /// Dispatches an event.
-    Event = 0,
+    Dispatch = 0,
     /// Used for ping checking.
     Heartbeat = 1,
     /// Used for client handshake.
@@ -83,7 +83,7 @@ pub enum OpCode {
     /// Used to tell clients to reconnect to the gateway.
     Reconnect = 7,
     /// Used to request guild members.
-    GetGuildMembers = 8,
+    RequestGuildMembers = 8,
     /// Used to notify clients that they have an invalid session Id.
     InvalidSession = 9,
     /// Sent immediately after connection, contains heartbeat + server info.
@@ -96,7 +96,7 @@ pub enum OpCode {
 
 enum_number!(
     OpCode {
-        Event,
+        Dispatch,
         Heartbeat,
         Identify,
         StatusUpdate,
@@ -104,7 +104,7 @@ enum_number!(
         VoiceServerPing,
         Resume,
         Reconnect,
-        GetGuildMembers,
+        RequestGuildMembers,
         InvalidSession,
         Hello,
         HeartbeatAck,
@@ -114,7 +114,7 @@ enum_number!(
 impl OpCode {
     pub fn num(self) -> u64 {
         match self {
-            OpCode::Event => 0,
+            OpCode::Dispatch => 0,
             OpCode::Heartbeat => 1,
             OpCode::Identify => 2,
             OpCode::StatusUpdate => 3,
@@ -122,7 +122,7 @@ impl OpCode {
             OpCode::VoiceServerPing => 5,
             OpCode::Resume => 6,
             OpCode::Reconnect => 7,
-            OpCode::GetGuildMembers => 8,
+            OpCode::RequestGuildMembers => 8,
             OpCode::InvalidSession => 9,
             OpCode::Hello => 10,
             OpCode::HeartbeatAck => 11,
@@ -134,29 +134,29 @@ impl OpCode {
 /// Enum to map voice opcodes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub enum VoiceOpCode {
-    /// Used to begin a voice websocket connection.
+    /// Begin a voice websocket connection.
     Identify = 0,
-    /// Used to select the voice protocol.
+    /// Select the voice protocol.
     SelectProtocol = 1,
-    /// Used to complete the websocket handshake.
+    /// Complete the websocket handshake.
     Ready = 2,
-    /// Used to keep the websocket connection alive.
+    /// Keep the websocket connection alive.
     Heartbeat = 3,
-    /// Used to describe the session.
+    /// Describe the session.
     SessionDescription = 4,
-    /// Used to indicate which users are speaking.
+    /// Indicate which users are speaking.
     Speaking = 5,
-    /// Heartbeat ACK, received by the client to show the server's receipt of a heartbeat.
+    /// Sent immediately following a received client heartbeat.
     HeartbeatAck = 6,
-    /// Sent after a disconnect to attempt to resume a session.
+    /// Resume a connection.
     Resume = 7,
-    /// Used to determine how often the client must send a heartbeat.
+    /// The continuous interval in milliseconds after which the client should send a heartbeat.
     Hello = 8,
-    /// Sent by the server if a session coulkd successfully be resumed.
+    /// Acknowledge Resume.
     Resumed = 9,
-    /// Message indicating that another user has connected to the voice channel.
+    /// A client has connected to the voice channel.
     ClientConnect = 12,
-    /// Message indicating that another user has disconnected from the voice channel.
+    /// A client has disconnected from the voice channel.
     ClientDisconnect = 13,
     #[doc(hidden)]
     __Nonexhaustive,
