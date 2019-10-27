@@ -681,8 +681,8 @@ fn encryption_key(client: &mut WsClient) -> Result<Key> {
             },
             VoiceEvent::Unknown(op, value) => {
                 debug!(
-                    "[Voice] Expected ready for key; got: op{}/v{:?}",
-                    op.num(),
+                    "[Voice] Expected ready for key; got: op{:?}/v{:?}",
+                    op,
                     value
                 );
             },

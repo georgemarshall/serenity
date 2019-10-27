@@ -5,6 +5,7 @@ use crate::http::CacheHttp;
 use chrono::{DateTime, FixedOffset};
 use crate::{model::prelude::*};
 use serde_json::Value;
+use serde_repr::{Serialize_repr, Deserialize_repr};
 
 #[cfg(feature = "model")]
 use crate::builder::{CreateEmbed, EditMessage};
@@ -688,7 +689,8 @@ pub struct MessageReaction {
 }
 
 /// Differentiates between regular and different types of system messages.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum MessageType {
     /// A regular message.
     Regular = 0,
@@ -718,46 +720,8 @@ pub enum MessageType {
     __Nonexhaustive,
 }
 
-enum_number!(
-    MessageType {
-        Regular,
-        GroupRecipientAddition,
-        GroupRecipientRemoval,
-        GroupCallCreation,
-        GroupNameUpdate,
-        GroupIconUpdate,
-        PinsAdd,
-        MemberJoin,
-        NitroBoost,
-        NitroTier1,
-        NitroTier2,
-        NitroTier3,
-    }
-);
-
-impl MessageType {
-    pub fn num(self) -> u64 {
-        use self::MessageType::*;
-
-        match self {
-            Regular => 0,
-            GroupRecipientAddition => 1,
-            GroupRecipientRemoval => 2,
-            GroupCallCreation => 3,
-            GroupNameUpdate => 4,
-            GroupIconUpdate => 5,
-            PinsAdd => 6,
-            MemberJoin => 7,
-            NitroBoost => 8,
-            NitroTier1 => 9,
-            NitroTier2 => 10,
-            NitroTier3 => 11,
-            __Nonexhaustive => unreachable!(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum MessageActivityKind {
     JOIN = 1,
     SPECTATE = 2,
@@ -766,29 +730,6 @@ pub enum MessageActivityKind {
     JOIN_REQUEST = 5,
     #[doc(hidden)]
     __Nonexhaustive,
-}
-
-enum_number!(
-    MessageActivityKind {
-        JOIN,
-        SPECTATE,
-        LISTEN,
-        JOIN_REQUEST,
-    }
-);
-
-impl MessageActivityKind {
-    pub fn num(self) -> u64 {
-        use self::MessageActivityKind::*;
-
-        match self {
-            JOIN => 1,
-            SPECTATE => 2,
-            LISTEN => 3,
-            JOIN_REQUEST => 5,
-            __Nonexhaustive => unreachable!(),
-        }
-    }
 }
 
 /// Rich Presence application information.

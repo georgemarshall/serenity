@@ -1,5 +1,7 @@
 //! A set of constants used by the library.
 
+use serde_repr::{Serialize_repr, Deserialize_repr};
+
 /// The maximum length of the textual size of an embed.
 pub const EMBED_MAX_LENGTH: u16 = 6000;
 /// The gateway version used by the library. The gateway URI is retrieved via
@@ -64,7 +66,8 @@ pub static JOIN_MESSAGES: &'static [&'static str] = &[
 ];
 
 /// Enum to map gateway opcodes.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum OpCode {
     /// Dispatches an event.
     Dispatch = 0,
@@ -94,45 +97,9 @@ pub enum OpCode {
     __Nonexhaustive,
 }
 
-enum_number!(
-    OpCode {
-        Dispatch,
-        Heartbeat,
-        Identify,
-        StatusUpdate,
-        VoiceStateUpdate,
-        VoiceServerPing,
-        Resume,
-        Reconnect,
-        RequestGuildMembers,
-        InvalidSession,
-        Hello,
-        HeartbeatAck,
-    }
-);
-
-impl OpCode {
-    pub fn num(self) -> u64 {
-        match self {
-            OpCode::Dispatch => 0,
-            OpCode::Heartbeat => 1,
-            OpCode::Identify => 2,
-            OpCode::StatusUpdate => 3,
-            OpCode::VoiceStateUpdate => 4,
-            OpCode::VoiceServerPing => 5,
-            OpCode::Resume => 6,
-            OpCode::Reconnect => 7,
-            OpCode::RequestGuildMembers => 8,
-            OpCode::InvalidSession => 9,
-            OpCode::Hello => 10,
-            OpCode::HeartbeatAck => 11,
-            OpCode::__Nonexhaustive => unreachable!(),
-        }
-    }
-}
-
 /// Enum to map voice opcodes.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum VoiceOpCode {
     /// Begin a voice websocket connection.
     Identify = 0,
@@ -160,43 +127,6 @@ pub enum VoiceOpCode {
     ClientDisconnect = 13,
     #[doc(hidden)]
     __Nonexhaustive,
-}
-
-enum_number!(
-    VoiceOpCode {
-        Identify,
-        SelectProtocol,
-        Ready,
-        Heartbeat,
-        SessionDescription,
-        Speaking,
-        HeartbeatAck,
-        Resume,
-        Hello,
-        Resumed,
-        ClientConnect,
-        ClientDisconnect,
-    }
-);
-
-impl VoiceOpCode {
-    pub fn num(self) -> u64 {
-        match self {
-            VoiceOpCode::Identify => 0,
-            VoiceOpCode::SelectProtocol => 1,
-            VoiceOpCode::Ready => 2,
-            VoiceOpCode::Heartbeat => 3,
-            VoiceOpCode::SessionDescription => 4,
-            VoiceOpCode::Speaking => 5,
-            VoiceOpCode::HeartbeatAck => 6,
-            VoiceOpCode::Resume => 7,
-            VoiceOpCode::Hello => 8,
-            VoiceOpCode::Resumed => 9,
-            VoiceOpCode::ClientConnect => 12,
-            VoiceOpCode::ClientDisconnect => 13,
-            VoiceOpCode::__Nonexhaustive => unreachable!(),
-        }
-    }
 }
 
 pub mod close_codes {

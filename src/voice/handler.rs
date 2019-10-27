@@ -438,7 +438,7 @@ impl Handler {
     fn update(&self) {
         if let Some(ref ws) = self.ws {
             let map = json!({
-                "op": VoiceOpCode::SessionDescription.num(),
+                "op": VoiceOpCode::SessionDescription,
                 "d": {
                     "channel_id": self.channel_id.map(|c| c.0),
                     "guild_id": self.guild_id.0,

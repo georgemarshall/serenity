@@ -26,6 +26,7 @@ use crate::{internal::RwLockExt, model::prelude::*};
 use serde::de::Error as DeError;
 use serde::ser::{SerializeStruct, Serialize, Serializer};
 use serde_json;
+use serde_repr::{Serialize_repr, Deserialize_repr};
 use super::utils::deserialize_u64;
 
 #[cfg(feature = "model")]
@@ -386,7 +387,8 @@ impl Display for Channel {
 }
 
 /// A representation of a type of channel.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum ChannelType {
     /// An indicator that the channel is a text [`GuildChannel`].
     ///
@@ -424,18 +426,6 @@ pub enum ChannelType {
     __Nonexhaustive,
 }
 
-enum_number!(
-    ChannelType {
-        Text,
-        Private,
-        Voice,
-        Group,
-        Category,
-        News,
-        Store,
-    }
-);
-
 impl ChannelType {
     pub fn name(&self) -> &str {
         match *self {
@@ -446,19 +436,6 @@ impl ChannelType {
             ChannelType::Category => "category",
             ChannelType::News => "news",
             ChannelType::Store => "store",
-            ChannelType::__Nonexhaustive => unreachable!(),
-        }
-    }
-
-    pub fn num(self) -> u64 {
-        match self {
-            ChannelType::Text => 0,
-            ChannelType::Private => 1,
-            ChannelType::Voice => 2,
-            ChannelType::Group => 3,
-            ChannelType::Category => 4,
-            ChannelType::News => 5,
-            ChannelType::Store => 6,
             ChannelType::__Nonexhaustive => unreachable!(),
         }
     }

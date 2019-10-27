@@ -5,7 +5,7 @@ use super::connection_info::ConnectionInfo;
 #[inline]
 pub fn build_identify(info: &ConnectionInfo) -> Value {
     json!({
-        "op": VoiceOpCode::Identify.num(),
+        "op": VoiceOpCode::Identify,
         "d": {
             "server_id": info.guild_id.0,
             "session_id": &info.session_id,
@@ -18,7 +18,7 @@ pub fn build_identify(info: &ConnectionInfo) -> Value {
 #[inline]
 pub fn build_heartbeat(nonce: u64) -> Value {
     json!({
-        "op": VoiceOpCode::Heartbeat.num(),
+        "op": VoiceOpCode::Heartbeat,
         "d": nonce,
     })
 }
@@ -26,7 +26,7 @@ pub fn build_heartbeat(nonce: u64) -> Value {
 #[inline]
 pub fn build_resume(info: &ConnectionInfo) -> Value {
     json!({
-        "op": VoiceOpCode::Resume.num(),
+        "op": VoiceOpCode::Resume,
         "d": {
             "server_id": info.guild_id.0,
             "session_id": &info.session_id,
@@ -38,7 +38,7 @@ pub fn build_resume(info: &ConnectionInfo) -> Value {
 #[inline]
 pub fn build_select_protocol(address: ::std::borrow::Cow<'_, str>, port: u16) -> Value {
     json!({
-        "op": VoiceOpCode::SelectProtocol.num(),
+        "op": VoiceOpCode::SelectProtocol,
         "d": {
             "protocol": "udp",
             "data": {
@@ -53,7 +53,7 @@ pub fn build_select_protocol(address: ::std::borrow::Cow<'_, str>, port: u16) ->
 #[inline]
 pub fn build_speaking(speaking: bool) -> Value {
     json!({
-        "op": VoiceOpCode::Speaking.num(),
+        "op": VoiceOpCode::Speaking,
         "d": {
             "delay": 0,
             "speaking": speaking,

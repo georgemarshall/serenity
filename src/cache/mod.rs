@@ -1002,7 +1002,7 @@ mod test {
                     verification_level: VerificationLevel::Low,
                     voice_states: HashMap::new(),
                     description: None,
-                    premium_tier: PremiumTier::Tier0,
+                    premium_tier: PremiumTier::None,
                     channels,
                     premium_subscription_count: 0,
                     banner: None,

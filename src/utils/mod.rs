@@ -913,7 +913,7 @@ mod test {
             verification_level: VerificationLevel::None,
             voice_states: HashMap::new(),
             description: None,
-            premium_tier: PremiumTier::Tier0,
+            premium_tier: PremiumTier::None,
             premium_subscription_count: 0,
             banner: None,
             vanity_url_code: Some("bruhmoment1".to_string()),

@@ -4,6 +4,7 @@ use parking_lot::RwLock;
 use serde::de::Error as DeError;
 use serde::ser::{SerializeStruct, Serialize, Serializer};
 use serde_json;
+use serde_repr::{Serialize_repr, Deserialize_repr};
 use std::sync::Arc;
 use super::utils::*;
 use super::prelude::*;
@@ -332,7 +333,8 @@ pub struct ActivitySecrets {
     pub(crate) _nonexhaustive: (),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum ActivityType {
     /// An indicator that the user is playing a game.
     Playing = 0,
@@ -342,27 +344,6 @@ pub enum ActivityType {
     Listening = 2,
     #[doc(hidden)]
     __Nonexhaustive,
-}
-
-enum_number!(
-    ActivityType {
-        Playing,
-        Streaming,
-        Listening,
-    }
-);
-
-impl ActivityType {
-    pub fn num(self) -> u64 {
-        use self::ActivityType::*;
-
-        match self {
-            Playing => 0,
-            Streaming => 1,
-            Listening => 2,
-            __Nonexhaustive => unreachable!(),
-        }
-    }
 }
 
 impl Default for ActivityType {

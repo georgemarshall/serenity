@@ -23,6 +23,7 @@ pub use self::premium_tier::*;
 use chrono::{DateTime, FixedOffset};
 use crate::model::prelude::*;
 use serde::de::Error as DeError;
+use serde_repr::{Serialize_repr, Deserialize_repr};
 use super::utils::*;
 
 #[cfg(all(feature = "cache", feature = "model"))]
@@ -2049,7 +2050,8 @@ impl GuildStatus {
 }
 
 /// Default message notification level for a guild.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum DefaultMessageNotificationLevel {
     /// Receive notifications for everything.
     All = 0,
@@ -2059,25 +2061,9 @@ pub enum DefaultMessageNotificationLevel {
     __Nonexhaustive,
 }
 
-enum_number!(
-    DefaultMessageNotificationLevel {
-        All,
-        Mentions,
-    }
-);
-
-impl DefaultMessageNotificationLevel {
-    pub fn num(self) -> u64 {
-        match self {
-            DefaultMessageNotificationLevel::All => 0,
-            DefaultMessageNotificationLevel::Mentions => 1,
-            DefaultMessageNotificationLevel::__Nonexhaustive => unreachable!(),
-        }
-    }
-}
-
 /// Setting used to filter explicit messages from members.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum ExplicitContentFilter {
     /// Don't scan any messages.
     None = 0,
@@ -2089,27 +2075,9 @@ pub enum ExplicitContentFilter {
     __Nonexhaustive,
 }
 
-enum_number!(
-    ExplicitContentFilter {
-        None,
-        WithoutRole,
-        All,
-    }
-);
-
-impl ExplicitContentFilter {
-    pub fn num(self) -> u64 {
-        match self {
-            ExplicitContentFilter::None => 0,
-            ExplicitContentFilter::WithoutRole => 1,
-            ExplicitContentFilter::All => 2,
-            ExplicitContentFilter::__Nonexhaustive => unreachable!(),
-        }
-    }
-}
-
 /// Multi-Factor Authentication level for guild moderators.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum MfaLevel {
     /// MFA is disabled.
     None = 0,
@@ -2117,23 +2085,6 @@ pub enum MfaLevel {
     Elevated = 1,
     #[doc(hidden)]
     __Nonexhaustive,
-}
-
-enum_number!(
-    MfaLevel {
-        None,
-        Elevated,
-    }
-);
-
-impl MfaLevel {
-    pub fn num(self) -> u64 {
-        match self {
-            MfaLevel::None => 0,
-            MfaLevel::Elevated => 1,
-            MfaLevel::__Nonexhaustive => unreachable!(),
-        }
-    }
 }
 
 /// The name of a region that a voice server can be located in.
@@ -2191,7 +2142,8 @@ impl Region {
     messages in a [`Guild`].
 
     [`Guild`]: struct.Guild.html"]
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd, Ord, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum VerificationLevel {
     /// Does not require any verification.
     None = 0,
@@ -2205,29 +2157,6 @@ pub enum VerificationLevel {
     Higher = 4,
     #[doc(hidden)]
     __Nonexhaustive,
-}
-
-enum_number!(
-    VerificationLevel {
-        None,
-        Low,
-        Medium,
-        High,
-        Higher,
-    }
-);
-
-impl VerificationLevel {
-    pub fn num(self) -> u64 {
-        match self {
-            VerificationLevel::None => 0,
-            VerificationLevel::Low => 1,
-            VerificationLevel::Medium => 2,
-            VerificationLevel::High => 3,
-            VerificationLevel::Higher => 4,
-            VerificationLevel::__Nonexhaustive => unreachable!(),
-        }
-    }
 }
 
 #[cfg(test)]

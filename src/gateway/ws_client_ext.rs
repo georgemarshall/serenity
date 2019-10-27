@@ -49,7 +49,7 @@ impl WebSocketGatewayClientExt for WsClient {
         debug!("[Shard {:?}] Requesting member chunks", shard_info);
 
         self.send_json(&json!({
-            "op": OpCode::RequestGuildMembers.num(),
+            "op": OpCode::RequestGuildMembers,
             "d": {
                 "guild_id": guild_ids.into_iter().map(|x| x.as_ref().0).collect::<Vec<u64>>(),
                 "limit": limit.unwrap_or(0),
@@ -64,7 +64,7 @@ impl WebSocketGatewayClientExt for WsClient {
 
         self.send_json(&json!({
             "d": seq,
-            "op": OpCode::Heartbeat.num(),
+            "op": OpCode::Heartbeat,
         })).map_err(From::from)
     }
 
@@ -73,7 +73,7 @@ impl WebSocketGatewayClientExt for WsClient {
         debug!("[Shard {:?}] Identifying", shard_info);
 
         self.send_json(&json!({
-            "op": OpCode::Identify.num(),
+            "op": OpCode::Identify,
             "d": {
                 "compress": true,
                 "large_threshold": constants::LARGE_THRESHOLD,
@@ -101,7 +101,7 @@ impl WebSocketGatewayClientExt for WsClient {
         debug!("[Shard {:?}] Sending presence update", shard_info);
 
         self.send_json(&json!({
-            "op": OpCode::StatusUpdate.num(),
+            "op": OpCode::StatusUpdate,
             "d": {
                 "afk": false,
                 "since": now,
@@ -125,7 +125,7 @@ impl WebSocketGatewayClientExt for WsClient {
         debug!("[Shard {:?}] Sending resume; seq: {}", shard_info, seq);
 
         self.send_json(&json!({
-            "op": OpCode::Resume.num(),
+            "op": OpCode::Resume,
             "d": {
                 "session_id": session_id,
                 "seq": seq,

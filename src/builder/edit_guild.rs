@@ -209,7 +209,7 @@ impl EditGuild {
     }
 
     fn _verification_level(&mut self, verification_level: VerificationLevel) {
-        let num = Value::Number(Number::from(verification_level.num()));
+        let num = serde_json::to_value(verification_level).unwrap_or_default();
         self.0.insert("verification_level", num);
     }
 }
