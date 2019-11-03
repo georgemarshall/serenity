@@ -1,3 +1,5 @@
+pub(crate) mod de;
+
 #[macro_use]
 pub mod macros;
 

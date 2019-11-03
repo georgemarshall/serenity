@@ -25,7 +25,6 @@ use audiopus::{
 };
 use parking_lot::Mutex;
 use rand::random;
-use serde::Deserialize;
 use sodiumoxide::crypto::secretbox::{self, Key, Nonce};
 use std::{
     collections::HashMap,
@@ -111,7 +110,7 @@ impl Connection {
                 None => continue,
             };
 
-            match VoiceEvent::deserialize(value)? {
+            match value {
                 VoiceEvent::Ready(r) => {
                     ready = Some(r);
                     if hello.is_some(){
@@ -248,7 +247,7 @@ impl Connection {
                 None => continue,
             };
 
-            match VoiceEvent::deserialize(value)? {
+            match value {
                 VoiceEvent::Resumed => {
                     resumed = Some(());
                     if hello.is_some(){
@@ -670,7 +669,7 @@ fn encryption_key(client: &mut WsClient) -> Result<Key> {
             None => continue,
         };
 
-        match VoiceEvent::deserialize(value)? {
+        match value {
             VoiceEvent::SessionDescription(desc) => {
                 if desc.mode != CRYPTO_MODE {
                     return Err(Error::Voice(VoiceError::VoiceModeInvalid));
@@ -757,12 +756,7 @@ fn start_ws_thread(client: Arc<Mutex<WsClient>>, tx: &MpscSender<ReceiverStatus>
         .name(format!("{} WS", thread_name))
         .spawn(move || {
             'outer: loop {
-                while let Ok(Some(value)) = client.lock().try_recv_json() {
-                    let msg = match VoiceEvent::deserialize(value) {
-                        Ok(msg) => msg,
-                        Err(_) => break,
-                    };
-
+                while let Ok(Some(msg)) = client.lock().try_recv_json::<VoiceEvent>() {
                     if tx_ws.send(ReceiverStatus::Websocket(msg)).is_err() {
                         break 'outer;
                     }

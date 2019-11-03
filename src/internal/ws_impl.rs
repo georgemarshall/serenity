@@ -1,6 +1,7 @@
 use flate2::read::ZlibDecoder;
 use crate::gateway::WsClient;
 use crate::internal::prelude::*;
+use serde::{Deserialize, Serialize};
 use serde_json;
 use tungstenite::{
     util::NonBlockingResult,
@@ -26,26 +27,41 @@ use url::Url;
 use std::net::ToSocketAddrs;
 
 pub trait ReceiverExt {
-    fn recv_json(&mut self) -> Result<Option<Value>>;
-    fn try_recv_json(&mut self) -> Result<Option<Value>>;
+    fn recv_json<T>(&mut self) -> Result<Option<T>>
+        where
+            T: for<'de> Deserialize<'de>;
+    fn try_recv_json<T>(&mut self) -> Result<Option<T>>
+        where
+            T: for<'de> Deserialize<'de>;
 }
 
 pub trait SenderExt {
-    fn send_json(&mut self, value: &Value) -> Result<()>;
+    fn send_json<T: ?Sized>(&mut self, value: &T) -> Result<()>
+        where
+            T: Serialize;
 }
 
 impl ReceiverExt for WsClient {
-    fn recv_json(&mut self) -> Result<Option<Value>> {
+    fn recv_json<T>(&mut self) -> Result<Option<T>>
+        where
+            T: for<'de> Deserialize<'de>
+    {
         convert_ws_message(Some(self.read_message()?))
     }
 
-    fn try_recv_json(&mut self) -> Result<Option<Value>> {
+    fn try_recv_json<T>(&mut self) -> Result<Option<T>>
+        where
+            T: for<'de> Deserialize<'de>
+    {
         convert_ws_message(self.read_message().no_block()?)
     }
 }
 
 impl SenderExt for WsClient {
-    fn send_json(&mut self, value: &Value) -> Result<()> {
+    fn send_json<T: ?Sized>(&mut self, value: &T) -> Result<()>
+        where
+            T: Serialize
+    {
         serde_json::to_string(value)
             .map(Message::Text)
             .map_err(Error::from)
@@ -54,7 +70,10 @@ impl SenderExt for WsClient {
 }
 
 #[inline]
-fn convert_ws_message(message: Option<Message>) -> Result<Option<Value>>{
+fn convert_ws_message<T>(message: Option<Message>) -> Result<Option<T>>
+    where
+        T: for<'de> Deserialize<'de>
+{
     Ok(match message {
         Some(Message::Binary(bytes)) => {
             serde_json::from_reader(ZlibDecoder::new(&bytes[..]))

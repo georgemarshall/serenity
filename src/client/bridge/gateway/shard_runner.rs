@@ -5,7 +5,6 @@ use crate::model::event::{Event, GatewayEvent};
 use crate::CacheAndHttp;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use serde::Deserialize;
 use std::{
     borrow::Cow,
     sync::{
@@ -415,11 +414,8 @@ impl ShardRunner {
     /// Returns a received event, as well as whether reading the potentially
     /// present event was successful.
     fn recv_event(&mut self) -> (Option<Event>, Option<ShardAction>, bool) {
-        let gw_event = match self.shard.client.recv_json() {
-            Ok(Some(value)) => {
-                GatewayEvent::deserialize(value).map(Some).map_err(From::from)
-            },
-            Ok(None) => Ok(None),
+        let gw_event = match self.shard.client.recv_json::<GatewayEvent>() {
+            Ok(value) => Ok(value),
             Err(Error::Tungstenite(TungsteniteError::Io(_))) => {
                 // Check that an amount of time at least double the
                 // heartbeat_interval has passed.

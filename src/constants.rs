@@ -94,6 +94,7 @@ pub enum OpCode {
     /// Sent immediately following a client heartbeat that was received.
     HeartbeatAck = 11,
     #[doc(hidden)]
+    #[serde(skip)]
     __Nonexhaustive,
 }
 
@@ -126,6 +127,7 @@ pub enum VoiceOpCode {
     /// A client has disconnected from the voice channel.
     ClientDisconnect = 13,
     #[doc(hidden)]
+    #[serde(skip)]
     __Nonexhaustive,
 }
 

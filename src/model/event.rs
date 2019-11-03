@@ -1,18 +1,24 @@
 //! All the events this library handles.
 
 use chrono::{DateTime, FixedOffset};
-use serde::de::Error as DeError;
+use serde::de::{self, Deserialize, DeserializeSeed, Error as DeError, MapAccess, SeqAccess};
 use serde::ser::{
     Serialize,
     SerializeSeq,
     Serializer
 };
-use serde_json;
-use std::collections::HashMap;
-use super::utils::{deserialize_emojis, deserialize_u64};
+use std::{
+    collections::HashMap,
+    fmt,
+    marker::PhantomData,
+};
+use super::utils::deserialize_emojis;
 use super::prelude::*;
 use crate::constants::{OpCode, VoiceOpCode};
-use crate::internal::prelude::*;
+use crate::internal::{
+    de::{Content, ContentDeserializer, OptionallyTaggedContentVisitor, size_hint},
+    prelude::*,
+};
 
 #[cfg(feature = "cache")]
 use crate::cache::{Cache, CacheUpdate};
@@ -520,18 +526,16 @@ impl CacheUpdate for GuildMemberAddEvent {
 }
 
 impl<'de> Deserialize<'de> for GuildMemberAddEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
-        let map = JsonMap::deserialize(deserializer)?;
-
-        let guild_id = map.get("guild_id")
-            .ok_or_else(|| DeError::custom("missing member add guild id"))
-            .and_then(GuildId::deserialize)
-            .map_err(DeError::custom)?;
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+        where
+            D: Deserializer<'de>
+    {
+        let member = Member::deserialize(deserializer)?;
 
         Ok(GuildMemberAddEvent {
-            guild_id,
-            member: Member::deserialize(Value::Object(map))
-                .map_err(DeError::custom)?,
+            // Duplicate `guild_id` since it is already contained by `Member`
+            guild_id: member.guild_id,
+            member,
             _nonexhaustive: (),
         })
     }
@@ -539,16 +543,11 @@ impl<'de> Deserialize<'de> for GuildMemberAddEvent {
 
 impl Serialize for GuildMemberAddEvent {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where S: Serializer {
-        let mut s: Vec<u8> = Vec::new();
-        let mut ser = serde_json::Serializer::new(&mut s);
-        Member::serialize(&self.member, &mut ser).unwrap(); // TODO find better way to do this
-        let mut map: JsonMap = serde_json::from_str(std::str::from_utf8(&s).unwrap()).unwrap();
-        map.insert(
-            "guild_id".to_string(),
-            serde_json::value::Value::Number(serde_json::Number::from(self.guild_id.0)),
-        );
-        map.serialize(serializer)
+        where
+            S: Serializer
+    {
+        // Skip `guild_id` since it is already contained by `Member`
+        self.member.serialize(serializer)
     }
 }
 
@@ -659,44 +658,208 @@ impl CacheUpdate for GuildMembersChunkEvent {
 }
 
 impl<'de> Deserialize<'de> for GuildMembersChunkEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
-        let mut map = JsonMap::deserialize(deserializer)?;
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+        where
+            D: Deserializer<'de>
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier)]
+        #[serde(rename_all = "snake_case")]
+        enum MemberField {
+            Deaf,
+            GuildId,
+            JoinedAt,
+            Mute,
+            Nick,
+            Roles,
+            User,
+        }
 
-        let guild_id = map.get("guild_id")
-            .ok_or_else(|| DeError::custom("missing member chunk guild id"))
-            .and_then(GuildId::deserialize)
-            .map_err(DeError::custom)?;
+        struct MemberVisitor {
+            guild_id: GuildId,
+        }
 
-        let mut members = map.remove("members")
-            .ok_or_else(|| DeError::custom("missing member chunk members"))?;
-
-        if let Some(members) = members.as_array_mut() {
-            let num = Value::Number(Number::from(guild_id.0));
-
-            for member in members {
-                if let Some(map) = member.as_object_mut() {
-                    map.insert("guild_id".to_string(), num.clone());
-                }
+        impl MemberVisitor {
+            pub fn new(guild_id: GuildId) -> Self {
+                MemberVisitor { guild_id }
             }
         }
 
-        let members = serde_json::from_value::<Vec<Member>>(members)
-            .map(|members| members
-                .into_iter()
-                .fold(HashMap::new(), |mut acc, member| {
-                    let id = member.user.read().id;
+        impl<'de> DeserializeSeed<'de> for MemberVisitor {
+            type Value = Member;
 
-                    acc.insert(id, member);
+            fn deserialize<D>(self, deserializer: D) -> StdResult<Self::Value, D::Error>
+                where
+                    D: Deserializer<'de>,
+            {
+                deserializer.deserialize_any(self)
+            }
+        }
 
-                    acc
-                }))
-            .map_err(DeError::custom)?;
+        impl<'de> Visitor<'de> for MemberVisitor {
+            type Value = Member;
 
-        Ok(GuildMembersChunkEvent {
-            guild_id,
-            members,
-            _nonexhaustive: (),
-        })
+            fn expecting(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt.write_str("struct Member")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> StdResult<Self::Value, M::Error>
+                where
+                    M: MapAccess<'de>,
+            {
+                let mut deaf = None;
+                let mut guild_id = None;
+                let mut joined_at = None;
+                let mut mute = None;
+                let mut nick = None;
+                let mut roles = None;
+                let mut user = None;
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        MemberField::Deaf => {
+                            if deaf.is_some() {
+                                return Err(de::Error::duplicate_field("deaf"));
+                            }
+                            deaf = Some(map.next_value()?);
+                        }
+                        MemberField::GuildId => {
+                            if guild_id.is_some() {
+                                return Err(de::Error::duplicate_field("guild_id"));
+                            }
+                            guild_id = Some(map.next_value()?);
+                        }
+                        MemberField::JoinedAt => {
+                            if joined_at.is_some() {
+                                return Err(de::Error::duplicate_field("joined_at"));
+                            }
+                            joined_at = Some(map.next_value()?);
+                        }
+                        MemberField::Mute => {
+                            if mute.is_some() {
+                                return Err(de::Error::duplicate_field("mute"));
+                            }
+                            mute = Some(map.next_value()?);
+                        }
+                        MemberField::Nick => {
+                            if nick.is_some() {
+                                return Err(de::Error::duplicate_field("nick"));
+                            }
+                            nick = Some(map.next_value()?);
+                        }
+                        MemberField::Roles => {
+                            if roles.is_some() {
+                                return Err(de::Error::duplicate_field("roles"));
+                            }
+                            roles = Some(map.next_value()?);
+                        }
+                        MemberField::User => {
+                            if user.is_some() {
+                                return Err(de::Error::duplicate_field("user"));
+                            }
+                            user = Some(Arc::new(RwLock::new(map.next_value()?)));
+                        }
+                    }
+                }
+                let deaf = deaf.ok_or_else(|| de::Error::missing_field("deaf"))?;
+                let guild_id = guild_id.unwrap_or(self.guild_id);
+                let joined_at = joined_at.ok_or_else(|| de::Error::missing_field("joined_at"))?;
+                let mute = mute.ok_or_else(|| de::Error::missing_field("mute"))?;
+                let roles = roles.ok_or_else(|| de::Error::missing_field("roles"))?;
+                let user = user.ok_or_else(|| de::Error::missing_field("user"))?;
+
+                Ok(Member { deaf, guild_id, joined_at, mute, nick, roles, user, _nonexhaustive: () })
+            }
+        }
+
+        struct MemberSeqVisitor {
+            guild_id: GuildId,
+        }
+
+        impl MemberSeqVisitor {
+            pub fn new(guild_id: GuildId) -> Self {
+                MemberSeqVisitor { guild_id }
+            }
+        }
+
+        impl<'de> Visitor<'de> for MemberSeqVisitor {
+            type Value = HashMap<UserId, Member>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a sequence struct Member")
+            }
+
+            fn visit_seq<S>(self, mut seq: S) -> StdResult<Self::Value, S::Error>
+                where
+                    S: SeqAccess<'de>,
+            {
+                let mut member_map = HashMap::with_capacity(size_hint::cautious(seq.size_hint()));
+                while let Some(member) = seq.next_element_seed(MemberVisitor::new(self.guild_id))? {
+                    let member_id = member.user.read().id;
+                    if member_map.contains_key(&member_id) {
+                        return Err(de::Error::custom(format_args!("duplicate member `{}`", member_id)));
+                    }
+                    member_map.insert(member_id, member);
+                }
+                Ok(member_map)
+            }
+        }
+
+        #[derive(Deserialize)]
+        #[serde(field_identifier)]
+        #[serde(rename_all = "snake_case")]
+        enum Field {
+            GuildId,
+            Members,
+            NotFound,
+        }
+
+        struct GuildMembersChunkEventVisitor;
+
+        impl<'de> Visitor<'de> for GuildMembersChunkEventVisitor {
+            type Value = GuildMembersChunkEvent;
+
+            fn expecting(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt.write_str("struct GuildMembersChunkEvent")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> StdResult<Self::Value, M::Error>
+                where
+                    M: MapAccess<'de>,
+            {
+                let mut guild_id = None;
+                let mut members = None;
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::GuildId => {
+                            if guild_id.is_some() {
+                                return Err(de::Error::duplicate_field("guild_id"));
+                            }
+                            guild_id = Some(map.next_value()?);
+                        }
+                        Field::Members => {
+                            if members.is_some() {
+                                return Err(de::Error::duplicate_field("members"));
+                            }
+                            members = Some(map.next_value()?);
+                        }
+                        Field::NotFound => (),
+                    }
+                }
+                let guild_id = guild_id.ok_or_else(|| de::Error::missing_field("guild_id"))?;
+                let members = members.ok_or_else(|| de::Error::missing_field("members"))?;
+
+                let deserializer = ContentDeserializer::new(members);
+
+                Ok(GuildMembersChunkEvent {
+                    guild_id,
+                    members: deserializer.deserialize_seq(MemberSeqVisitor::new(guild_id))?,
+                    _nonexhaustive: (),
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &["guild_id", "members", "not_found"];
+        deserializer.deserialize_struct("GuildMembersChunkEvent", FIELDS, GuildMembersChunkEventVisitor)
     }
 }
 
@@ -969,12 +1132,13 @@ impl CacheUpdate for MessageUpdateEvent {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct PresenceUpdateEvent {
     pub guild_id: Option<GuildId>,
+    #[serde(flatten)]
     pub presence: Presence,
     pub roles: Option<Vec<RoleId>>,
-    #[serde(skip_serializing)]
+    #[serde(skip)]
     pub(crate) _nonexhaustive: (),
 }
 
@@ -1032,32 +1196,6 @@ impl CacheUpdate for PresenceUpdateEvent {
         }
 
         None
-    }
-}
-
-impl<'de> Deserialize<'de> for PresenceUpdateEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
-        let mut map = JsonMap::deserialize(deserializer)?;
-
-        let guild_id = match map.remove("guild_id") {
-            Some(v) => serde_json::from_value::<Option<GuildId>>(v)
-                .map_err(DeError::custom)?,
-            None => None,
-        };
-        let roles = match map.remove("roles") {
-            Some(v) => serde_json::from_value::<Option<Vec<RoleId>>>(v)
-                .map_err(DeError::custom)?,
-            None => None,
-        };
-        let presence = Presence::deserialize(Value::Object(map))
-            .map_err(DeError::custom)?;
-
-        Ok(Self {
-            guild_id,
-            presence,
-            roles,
-            _nonexhaustive: (),
-        })
     }
 }
 
@@ -1291,10 +1429,12 @@ pub struct VoiceServerUpdateEvent {
     pub(crate) _nonexhaustive: (),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VoiceStateUpdateEvent {
     pub guild_id: Option<GuildId>,
+    #[serde(flatten)]
     pub voice_state: VoiceState,
+    #[serde(skip)]
     pub(crate) _nonexhaustive: (),
 }
 
@@ -1325,46 +1465,18 @@ impl CacheUpdate for VoiceStateUpdateEvent {
     }
 }
 
-impl<'de> Deserialize<'de> for VoiceStateUpdateEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
-        let map = JsonMap::deserialize(deserializer)?;
-        let guild_id = match map.get("guild_id") {
-            Some(v) => Some(GuildId::deserialize(v).map_err(DeError::custom)?),
-            None => None,
-        };
-
-        Ok(VoiceStateUpdateEvent {
-            guild_id,
-            voice_state: VoiceState::deserialize(Value::Object(map))
-                .map_err(DeError::custom)?,
-            _nonexhaustive: (),
-        })
-    }
-}
-
-impl Serialize for VoiceStateUpdateEvent {
-    fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-    where S: Serializer {
-        let mut s: Vec<u8> = Vec::new();
-        let mut ser = serde_json::Serializer::new(&mut s);
-        VoiceState::serialize(&self.voice_state, &mut ser).unwrap(); // TODO find better way to do this
-        let mut map: JsonMap = serde_json::from_str(std::str::from_utf8(&s).unwrap()).unwrap();
-        if let Some(guild_id) = self.guild_id {
-            map.insert(
-                "guild_id".to_string(),
-                serde_json::value::Value::Number(serde_json::Number::from(guild_id.0)),
-            );
-        }
-        map.serialize(serializer)
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WebhookUpdateEvent {
     pub channel_id: ChannelId,
     pub guild_id: GuildId,
     #[serde(skip)]
     pub(crate) _nonexhaustive: (),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hello {
+    // _trace: Vec<String>,
+    pub heartbeat_interval: u64,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1375,7 +1487,7 @@ pub enum GatewayEvent {
     Heartbeat(u64),
     Reconnect,
     /// Whether the session can be resumed.
-    InvalidateSession(bool),
+    InvalidSession(bool),
     Hello(u64),
     HeartbeatAck,
     #[doc(hidden)]
@@ -1383,68 +1495,168 @@ pub enum GatewayEvent {
 }
 
 impl<'de> Deserialize<'de> for GatewayEvent {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D)
-        -> StdResult<Self, D::Error> {
-        let mut map = JsonMap::deserialize(deserializer)?;
+    fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+        where
+            D: Deserializer<'de>
+    {
+        pub struct GatewayPayload<'a> {
+            pub opcode: OpCode,
+            pub data: Content<'a>,
+            pub sequence: Option<u64>,
+            pub event_type: Option<EventType>,
+        }
 
-        let op = map.remove("op")
-            .ok_or_else(|| DeError::custom("expected op"))
-            .and_then(OpCode::deserialize)
-            .map_err(DeError::custom)?;
+        // The code bellow replicates the functionality of the generated code from
+        // serde. However the generated code has issues with lifetime inference and must
+        // be implemented manually until fixed.
+        //
+        // #[derive(Deserialize)]
+        // #[serde(deny_unknown_fields)]
+        // pub struct GatewayPayload<'a> {
+        //     #[serde(rename = "op")]
+        //     pub opcode: OpCode,
+        //     #[serde(borrow)]
+        //     #[serde(rename = "d")]
+        //     pub data: Content<'a>,
+        //     #[serde(rename = "s")]
+        //     pub sequence: Option<u64>,
+        //     #[serde(rename = "t")]
+        //     pub event_type: Option<EventType>,
+        // }
+        impl<'de: 'a, 'a> Deserialize<'de> for GatewayPayload<'a> {
+            fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+                where
+                    D: Deserializer<'de>
+            {
+                #[derive(Deserialize)]
+                #[serde(field_identifier)]
+                enum Field {
+                    #[serde(rename = "op")]
+                    OpCode,
+                    #[serde(rename = "d")]
+                    Data,
+                    #[serde(rename = "s")]
+                    Sequence,
+                    #[serde(rename = "t")]
+                    Type,
+                }
 
-        Ok(match op {
-            OpCode::Dispatch => {
-                let s = map.remove("s")
-                    .ok_or_else(|| DeError::custom("expected gateway event sequence"))
-                    .and_then(u64::deserialize)
-                    .map_err(DeError::custom)?;
-                let kind = map.remove("t")
-                    .ok_or_else(|| DeError::custom("expected gateway event type"))
-                    .and_then(EventType::deserialize)
-                    .map_err(DeError::custom)?;
-                let payload = map.remove("d").ok_or_else(|| {
-                    Error::Decode("expected gateway event d", Value::Object(map))
-                }).map_err(DeError::custom)?;
+                struct GatewayPayloadVisitor<'de: 'a, 'a> {
+                    marker: PhantomData<GatewayPayload<'a>>,
+                    lifetime: PhantomData<&'de ()>,
+                }
 
-                let x = deserialize_event_with_type(kind, payload)
-                    .map_err(DeError::custom)?;
+                impl<'de: 'a, 'a> Visitor<'de> for GatewayPayloadVisitor<'de, 'a> {
+                    type Value = GatewayPayload<'a>;
 
-                GatewayEvent::Dispatch(s, x)
-            },
-            OpCode::Heartbeat => {
-                let s = map.remove("s")
-                    .ok_or_else(|| DeError::custom("Expected heartbeat s"))
-                    .and_then(u64::deserialize)
-                    .map_err(DeError::custom)?;
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("struct GatewayPayload")
+                    }
 
-                GatewayEvent::Heartbeat(s)
-            },
-            OpCode::Reconnect => GatewayEvent::Reconnect,
-            OpCode::InvalidSession => {
-                let resumable = map.remove("d")
-                    .ok_or_else(|| {
-                        DeError::custom("expected gateway invalid session d")
-                    })
-                    .and_then(bool::deserialize)
-                    .map_err(DeError::custom)?;
+                    fn visit_map<V>(self, mut map: V) -> StdResult<Self::Value, V::Error>
+                        where
+                            V: MapAccess<'de>,
+                    {
+                        let mut opcode = None;
+                        let mut data = None;
+                        let mut sequence = None;
+                        let mut event_type = None;
+                        while let Some(key) = map.next_key()? {
+                            match key {
+                                Field::OpCode => {
+                                    if opcode.is_some() {
+                                        return Err(de::Error::duplicate_field("op"));
+                                    }
+                                    opcode = Some(map.next_value()?);
+                                }
+                                Field::Data => {
+                                    if data.is_some() {
+                                        return Err(de::Error::duplicate_field("d"));
+                                    }
+                                    data = Some(map.next_value()?);
+                                }
+                                Field::Sequence => {
+                                    if sequence.is_some() {
+                                        return Err(de::Error::duplicate_field("s"));
+                                    }
+                                    sequence = Some(map.next_value()?);
+                                }
+                                Field::Type => {
+                                    if event_type.is_some() {
+                                        return Err(de::Error::duplicate_field("t"));
+                                    }
+                                    event_type = Some(map.next_value()?);
+                                }
+                            }
+                        }
+                        let opcode = opcode.ok_or_else(|| de::Error::missing_field("op"))?;
+                        let data = data.ok_or_else(|| de::Error::missing_field("d"))?;
+                        let sequence = sequence.ok_or_else(|| de::Error::missing_field("s"))?;
+                        let event_type = event_type.ok_or_else(|| de::Error::missing_field("t"))?;
 
-                GatewayEvent::InvalidateSession(resumable)
-            },
-            OpCode::Hello => {
-                let mut d = map.remove("d")
-                    .ok_or_else(|| DeError::custom("expected gateway hello d"))
-                    .and_then(JsonMap::deserialize)
-                    .map_err(DeError::custom)?;
-                let interval = d.remove("heartbeat_interval")
-                    .ok_or_else(|| DeError::custom("expected gateway hello interval"))
-                    .and_then(u64::deserialize)
-                    .map_err(DeError::custom)?;
+                        Ok(GatewayPayload { opcode, data, sequence, event_type })
+                    }
+                }
 
-                GatewayEvent::Hello(interval)
-            },
-            OpCode::HeartbeatAck => GatewayEvent::HeartbeatAck,
-            _ => return Err(DeError::custom("invalid opcode")),
-        })
+                const FIELDS: &[&str] = &["op", "d", "s", "t"];
+                deserializer.deserialize_struct("GatewayPayload", FIELDS, GatewayPayloadVisitor { marker: PhantomData::<GatewayPayload<'a>>, lifetime: PhantomData })
+            }
+        }
+
+        struct GatewayEventVisitor {
+            opcode: OpCode,
+            sequence: Option<u64>,
+            event_type: Option<EventType>,
+        }
+
+        impl GatewayEventVisitor {
+            pub fn new(opcode: OpCode, sequence: Option<u64>, event_type: Option<EventType>) -> Self {
+                GatewayEventVisitor { opcode, sequence, event_type }
+            }
+        }
+
+        impl<'de> DeserializeSeed<'de> for GatewayEventVisitor {
+            type Value = GatewayEvent;
+
+            fn deserialize<D>(self, deserializer: D) -> StdResult<Self::Value, D::Error>
+                where
+                    D: Deserializer<'de>,
+            {
+                Ok(match self.opcode {
+                    OpCode::Dispatch => {
+                        let s = self.sequence.ok_or_else(|| de::Error::invalid_value(de::Unexpected::Option, &"sequence value"))?;
+                        let kind = self.event_type.ok_or_else(|| de::Error::invalid_value(de::Unexpected::Option, &"evnent type"))?;
+                        let seed = EventSeed::new(kind);
+                        let x = seed.deserialize(deserializer)?;
+
+                        GatewayEvent::Dispatch(s, x)
+                    }
+                    OpCode::Heartbeat => {
+                        let s = self.sequence.ok_or_else(|| de::Error::invalid_value(de::Unexpected::Option, &"sequence value"))?;
+
+                        GatewayEvent::Heartbeat(s)
+                    }
+                    OpCode::Reconnect => GatewayEvent::Reconnect,
+                    OpCode::InvalidSession => {
+                        let resumable = bool::deserialize(deserializer)?;
+
+                        GatewayEvent::InvalidSession(resumable)
+                    }
+                    OpCode::Hello => {
+                        let hello = Hello::deserialize(deserializer)?;
+
+                        GatewayEvent::Hello(hello.heartbeat_interval)
+                    }
+                    OpCode::HeartbeatAck => GatewayEvent::HeartbeatAck,
+                    _ => return Err(de::Error::unknown_variant(&format!("{:?}", self.opcode), &["Dispatch", "Heartbeat", "Reconnect", "Reconnect", "InvalidSession", "Hello", "HeartbeatAck"])),
+                })
+            }
+        }
+
+        let GatewayPayload { opcode, data, sequence, event_type } = GatewayPayload::deserialize(deserializer)?;
+
+        let visitor = GatewayEventVisitor::new(opcode, sequence, event_type);
+        visitor.deserialize(ContentDeserializer::new(data))
     }
 }
 
@@ -1568,131 +1780,143 @@ pub enum Event {
     __Nonexhaustive,
 }
 
-/// Deserializes a `serde_json::Value` into an `Event`.
-///
-/// The given `EventType` is used to determine what event to deserialize into.
-/// For example, an [`EventType::ChannelCreate`] will cause the given value to
-/// attempt to be deserialized into a [`ChannelCreateEvent`].
-///
-/// Special handling is done in regards to [`EventType::GuildCreate`] and
-/// [`EventType::GuildDelete`]: they check for an `"unavailable"` key and, if
-/// present and containing a value of `true`, will cause a
-/// [`GuildUnavailableEvent`] to be returned. Otherwise, all other event types
-/// correlate to the deserialization of their appropriate event.
-///
-/// [`EventType::ChannelCreate`]: enum.EventType.html#variant.ChannelCreate
-/// [`EventType::GuildCreate`]: enum.EventType.html#variant.GuildCreate
-/// [`EventType::GuildDelete`]: enum.EventType.html#variant.GuildDelete
-/// [`ChannelCreateEvent`]: struct.ChannelCreateEvent.html
-/// [`GuildUnavailableEvent`]: struct.GuildUnavailableEvent.html
-pub fn deserialize_event_with_type(kind: EventType, v: Value) -> Result<Event> {
-    Ok(match kind {
-        EventType::ChannelCreate => Event::ChannelCreate(serde_json::from_value(v)?),
-        EventType::ChannelDelete => Event::ChannelDelete(serde_json::from_value(v)?),
-        EventType::ChannelPinsUpdate => {
-            Event::ChannelPinsUpdate(serde_json::from_value(v)?)
-        },
-        EventType::ChannelRecipientAdd => {
-            Event::ChannelRecipientAdd(serde_json::from_value(v)?)
-        },
-        EventType::ChannelRecipientRemove => {
-            Event::ChannelRecipientRemove(serde_json::from_value(v)?)
-        },
-        EventType::ChannelUpdate => Event::ChannelUpdate(serde_json::from_value(v)?),
-        EventType::GuildBanAdd => Event::GuildBanAdd(serde_json::from_value(v)?),
-        EventType::GuildBanRemove => Event::GuildBanRemove(serde_json::from_value(v)?),
-        EventType::GuildCreate | EventType::GuildUnavailable => {
-            // GuildUnavailable isn't actually received from the gateway, so it
-            // can be lumped in with GuildCreate's arm.
+struct EventSeed {
+    event_type: EventType,
+}
 
-            let mut map = JsonMap::deserialize(v)?;
+impl EventSeed {
+    fn new(event_type: EventType) -> Self {
+        EventSeed { event_type }
+    }
+}
 
-            if map.remove("unavailable")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false) {
-                let guild_data = serde_json::from_value(Value::Object(map))?;
+impl<'de> DeserializeSeed<'de> for EventSeed {
+    type Value = Event;
 
-                Event::GuildUnavailable(guild_data)
-            } else {
-                Event::GuildCreate(serde_json::from_value(Value::Object(map))?)
+    /// Deserializes a `serde_json::Value` into an `Event`.
+    ///
+    /// The given `EventType` is used to determine what event to deserialize into.
+    /// For example, an [`EventType::ChannelCreate`] will cause the given value to
+    /// attempt to be deserialized into a [`ChannelCreateEvent`].
+    ///
+    /// Special handling is done in regards to [`EventType::GuildCreate`] and
+    /// [`EventType::GuildDelete`]: they check for an `"unavailable"` key and, if
+    /// present and containing a value of `true`, will cause a
+    /// [`GuildUnavailableEvent`] to be returned. Otherwise, all other event types
+    /// correlate to the deserialization of their appropriate event.
+    ///
+    /// [`EventType::ChannelCreate`]: enum.EventType.html#variant.ChannelCreate
+    /// [`EventType::GuildCreate`]: enum.EventType.html#variant.GuildCreate
+    /// [`EventType::GuildDelete`]: enum.EventType.html#variant.GuildDelete
+    /// [`ChannelCreateEvent`]: struct.ChannelCreateEvent.html
+    /// [`GuildUnavailableEvent`]: struct.GuildUnavailableEvent.html
+    fn deserialize<D>(self, deserializer: D) -> StdResult<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+    {
+        Ok(match self.event_type {
+            EventType::ChannelCreate => Event::ChannelCreate(ChannelCreateEvent::deserialize(deserializer)?),
+            EventType::ChannelDelete => Event::ChannelDelete(ChannelDeleteEvent::deserialize(deserializer)?),
+            EventType::ChannelPinsUpdate => {
+                Event::ChannelPinsUpdate(ChannelPinsUpdateEvent::deserialize(deserializer)?)
             }
-        },
-        EventType::GuildDelete => {
-            let mut map = JsonMap::deserialize(v)?;
-
-            if map.remove("unavailable")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false) {
-                let guild_data = serde_json::from_value(Value::Object(map))?;
-
-                Event::GuildUnavailable(guild_data)
-            } else {
-                Event::GuildDelete(serde_json::from_value(Value::Object(map))?)
+            EventType::ChannelRecipientAdd => {
+                Event::ChannelRecipientAdd(ChannelRecipientAddEvent::deserialize(deserializer)?)
             }
-        },
-        EventType::GuildEmojisUpdate => {
-            Event::GuildEmojisUpdate(serde_json::from_value(v)?)
-        },
-        EventType::GuildIntegrationsUpdate => {
-            Event::GuildIntegrationsUpdate(serde_json::from_value(v)?)
-        },
-        EventType::GuildMemberAdd => Event::GuildMemberAdd(serde_json::from_value(v)?),
-        EventType::GuildMemberRemove => {
-            Event::GuildMemberRemove(serde_json::from_value(v)?)
-        },
-        EventType::GuildMemberUpdate => {
-            Event::GuildMemberUpdate(serde_json::from_value(v)?)
-        },
-        EventType::GuildMembersChunk => {
-            Event::GuildMembersChunk(serde_json::from_value(v)?)
-        },
-        EventType::GuildRoleCreate => {
-            Event::GuildRoleCreate(serde_json::from_value(v)?)
-        },
-        EventType::GuildRoleDelete => {
-            Event::GuildRoleDelete(serde_json::from_value(v)?)
-        },
-        EventType::GuildRoleUpdate => {
-            Event::GuildRoleUpdate(serde_json::from_value(v)?)
-        },
-        EventType::GuildUpdate => Event::GuildUpdate(serde_json::from_value(v)?),
-        EventType::MessageCreate => Event::MessageCreate(serde_json::from_value(v)?),
-        EventType::MessageDelete => Event::MessageDelete(serde_json::from_value(v)?),
-        EventType::MessageDeleteBulk => {
-            Event::MessageDeleteBulk(serde_json::from_value(v)?)
-        },
-        EventType::ReactionAdd => {
-            Event::ReactionAdd(serde_json::from_value(v)?)
-        },
-        EventType::ReactionRemove => {
-            Event::ReactionRemove(serde_json::from_value(v)?)
-        },
-        EventType::ReactionRemoveAll => {
-            Event::ReactionRemoveAll(serde_json::from_value(v)?)
-        },
-        EventType::MessageUpdate => Event::MessageUpdate(serde_json::from_value(v)?),
-        EventType::PresenceUpdate => Event::PresenceUpdate(serde_json::from_value(v)?),
-        EventType::PresencesReplace => {
-            Event::PresencesReplace(serde_json::from_value(v)?)
-        },
-        EventType::Ready => Event::Ready(serde_json::from_value(v)?),
-        EventType::Resumed => Event::Resumed(serde_json::from_value(v)?),
-        EventType::TypingStart => Event::TypingStart(serde_json::from_value(v)?),
-        EventType::UserUpdate => Event::UserUpdate(serde_json::from_value(v)?),
-        EventType::VoiceServerUpdate => {
-            Event::VoiceServerUpdate(serde_json::from_value(v)?)
-        },
-        EventType::VoiceStateUpdate => {
-            Event::VoiceStateUpdate(serde_json::from_value(v)?)
-        },
-        EventType::WebhookUpdate => Event::WebhookUpdate(serde_json::from_value(v)?),
-        EventType::Other(kind) => Event::Unknown(UnknownEvent {
-            kind: kind.to_owned(),
-            value: v,
-            _nonexhaustive: (),
-        }),
-        EventType::__Nonexhaustive => unreachable!(),
-    })
+            EventType::ChannelRecipientRemove => {
+                Event::ChannelRecipientRemove(ChannelRecipientRemoveEvent::deserialize(deserializer)?)
+            }
+            EventType::ChannelUpdate => Event::ChannelUpdate(ChannelUpdateEvent::deserialize(deserializer)?),
+            EventType::GuildBanAdd => Event::GuildBanAdd(GuildBanAddEvent::deserialize(deserializer)?),
+            EventType::GuildBanRemove => Event::GuildBanRemove(GuildBanRemoveEvent::deserialize(deserializer)?),
+            EventType::GuildCreate | EventType::GuildUnavailable => {
+                // GuildUnavailable isn't actually received from the gateway, so it
+                // can be lumped in with GuildCreate's arm.
+                let visitor = OptionallyTaggedContentVisitor::new("unavailable");
+                let optionally_tagged = deserializer.deserialize_map(visitor)?;
+
+                let de = ContentDeserializer::new(optionally_tagged.content);
+                if optionally_tagged.tag.unwrap_or(false) {
+                    Event::GuildUnavailable(GuildUnavailableEvent::deserialize(de)?)
+                } else {
+                    Event::GuildCreate(GuildCreateEvent::deserialize(de)?)
+                }
+            }
+            EventType::GuildDelete => {
+                let visitor = OptionallyTaggedContentVisitor::new("unavailable");
+                let optionally_tagged = deserializer.deserialize_map(visitor)?;
+
+                let de = ContentDeserializer::new(optionally_tagged.content);
+                if optionally_tagged.tag.unwrap_or(false) {
+                    Event::GuildUnavailable(GuildUnavailableEvent::deserialize(de)?)
+                } else {
+                    Event::GuildDelete(GuildDeleteEvent::deserialize(de)?)
+                }
+            }
+            EventType::GuildEmojisUpdate => {
+                Event::GuildEmojisUpdate(GuildEmojisUpdateEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildIntegrationsUpdate => {
+                Event::GuildIntegrationsUpdate(GuildIntegrationsUpdateEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildMemberAdd => Event::GuildMemberAdd(GuildMemberAddEvent::deserialize(deserializer)?),
+            EventType::GuildMemberRemove => {
+                Event::GuildMemberRemove(GuildMemberRemoveEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildMemberUpdate => {
+                Event::GuildMemberUpdate(GuildMemberUpdateEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildMembersChunk => {
+                Event::GuildMembersChunk(GuildMembersChunkEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildRoleCreate => {
+                Event::GuildRoleCreate(GuildRoleCreateEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildRoleDelete => {
+                Event::GuildRoleDelete(GuildRoleDeleteEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildRoleUpdate => {
+                Event::GuildRoleUpdate(GuildRoleUpdateEvent::deserialize(deserializer)?)
+            }
+            EventType::GuildUpdate => Event::GuildUpdate(GuildUpdateEvent::deserialize(deserializer)?),
+            EventType::MessageCreate => Event::MessageCreate(MessageCreateEvent::deserialize(deserializer)?),
+            EventType::MessageDelete => Event::MessageDelete(MessageDeleteEvent::deserialize(deserializer)?),
+            EventType::MessageDeleteBulk => {
+                Event::MessageDeleteBulk(MessageDeleteBulkEvent::deserialize(deserializer)?)
+            }
+            EventType::MessageReactionAdd => {
+                Event::ReactionAdd(ReactionAddEvent::deserialize(deserializer)?)
+            }
+            EventType::MessageReactionRemove => {
+                Event::ReactionRemove(ReactionRemoveEvent::deserialize(deserializer)?)
+            }
+            EventType::MessageReactionRemoveAll => {
+                Event::ReactionRemoveAll(ReactionRemoveAllEvent::deserialize(deserializer)?)
+            }
+            EventType::MessageUpdate => Event::MessageUpdate(MessageUpdateEvent::deserialize(deserializer)?),
+            EventType::PresenceUpdate => Event::PresenceUpdate(PresenceUpdateEvent::deserialize(deserializer)?),
+            EventType::PresencesReplace => {
+                Event::PresencesReplace(PresencesReplaceEvent::deserialize(deserializer)?)
+            }
+            EventType::Ready => Event::Ready(ReadyEvent::deserialize(deserializer)?),
+            EventType::Resumed => Event::Resumed(ResumedEvent::deserialize(deserializer)?),
+            EventType::TypingStart => Event::TypingStart(TypingStartEvent::deserialize(deserializer)?),
+            EventType::UserUpdate => Event::UserUpdate(UserUpdateEvent::deserialize(deserializer)?),
+            EventType::VoiceServerUpdate => {
+                Event::VoiceServerUpdate(VoiceServerUpdateEvent::deserialize(deserializer)?)
+            }
+            EventType::VoiceStateUpdate => {
+                Event::VoiceStateUpdate(VoiceStateUpdateEvent::deserialize(deserializer)?)
+            }
+            EventType::WebhooksUpdate => Event::WebhookUpdate(WebhookUpdateEvent::deserialize(deserializer)?),
+            EventType::Other(kind) => Event::Unknown(UnknownEvent {
+                kind: kind.to_owned(),
+                value: Value::deserialize(deserializer)?,
+                _nonexhaustive: (),
+            }),
+            EventType::__Nonexhaustive => unreachable!(),
+        })
+    }
 }
 
 /// The type of event dispatch received from the gateway.
@@ -1873,19 +2097,19 @@ pub enum EventType {
     /// This maps to [`ReactionAddEvent`].
     ///
     /// [`ReactionAddEvent`]: struct.ReactionAddEvent.html
-    ReactionAdd,
+    MessageReactionAdd,
     /// Indicator that a reaction remove payload was received.
     ///
     /// This maps to [`ReactionRemoveEvent`].
     ///
     /// [`ReactionRemoveEvent`]: struct.ResumedEvent.html
-    ReactionRemove,
+    MessageReactionRemove,
     /// Indicator that a reaction remove all payload was received.
     ///
     /// This maps to [`ReactionRemoveAllEvent`].
     ///
     /// [`ReactionRemoveAllEvent`]: struct.ReactionRemoveAllEvent.html
-    ReactionRemoveAll,
+    MessageReactionRemoveAll,
     /// Indicator that a ready payload was received.
     ///
     /// This maps to [`ReadyEvent`].
@@ -1927,7 +2151,7 @@ pub enum EventType {
     /// This maps to [`WebhookUpdateEvent`].
     ///
     /// [`WebhookUpdateEvent`]: struct.WebhookUpdateEvent.html
-    WebhookUpdate,
+    WebhooksUpdate,
     /// An unknown event was received over the gateway.
     ///
     /// This should be logged so that support for it can be added in the
@@ -1945,7 +2169,7 @@ impl<'de> Deserialize<'de> for EventType {
         impl<'de> Visitor<'de> for EventTypeVisitor {
             type Value = EventType;
 
-            fn expecting(&self, f: &mut Formatter<'_>) -> FmtResult {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("event type str")
             }
 
@@ -1975,9 +2199,9 @@ impl<'de> Deserialize<'de> for EventType {
                     "MESSAGE_CREATE" => EventType::MessageCreate,
                     "MESSAGE_DELETE" => EventType::MessageDelete,
                     "MESSAGE_DELETE_BULK" => EventType::MessageDeleteBulk,
-                    "MESSAGE_REACTION_ADD" => EventType::ReactionAdd,
-                    "MESSAGE_REACTION_REMOVE" => EventType::ReactionRemove,
-                    "MESSAGE_REACTION_REMOVE_ALL" => EventType::ReactionRemoveAll,
+                    "MESSAGE_REACTION_ADD" => EventType::MessageReactionAdd,
+                    "MESSAGE_REACTION_REMOVE" => EventType::MessageReactionRemove,
+                    "MESSAGE_REACTION_REMOVE_ALL" => EventType::MessageReactionRemoveAll,
                     "MESSAGE_UPDATE" => EventType::MessageUpdate,
                     "PRESENCE_UPDATE" => EventType::PresenceUpdate,
                     "PRESENCES_REPLACE" => EventType::PresencesReplace,
@@ -1987,7 +2211,7 @@ impl<'de> Deserialize<'de> for EventType {
                     "USER_UPDATE" => EventType::UserUpdate,
                     "VOICE_SERVER_UPDATE" => EventType::VoiceServerUpdate,
                     "VOICE_STATE_UPDATE" => EventType::VoiceStateUpdate,
-                    "WEBHOOKS_UPDATE" => EventType::WebhookUpdate,
+                    "WEBHOOKS_UPDATE" => EventType::WebhooksUpdate,
                     other => EventType::Other(other.to_owned()),
                 })
             }
@@ -2004,18 +2228,11 @@ pub struct VoiceHeartbeat {
     pub(crate) _nonexhaustive: (),
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct VoiceHeartbeatAck {
     pub nonce: u64,
     #[serde(skip)]
     pub(crate) _nonexhaustive: (),
-}
-
-impl<'de> Deserialize<'de> for VoiceHeartbeatAck {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
-        deserialize_u64(deserializer)
-            .map(|nonce| Self { nonce, _nonexhaustive: () })
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2117,58 +2334,135 @@ pub enum VoiceEvent {
 
 impl<'de> Deserialize<'de> for VoiceEvent {
     fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
-        where D: Deserializer<'de> {
-        let mut map = JsonMap::deserialize(deserializer)?;
+        where
+            D: Deserializer<'de>
+    {
+        pub struct GatewayPayload<'a> {
+            pub opcode: VoiceOpCode,
+            pub data: Content<'a>,
+        }
 
-        let op = map.remove("op")
-            .ok_or_else(|| DeError::custom("expected voice event op"))
-            .and_then(VoiceOpCode::deserialize)
-            .map_err(DeError::custom)?;
+        // The code bellow replicates the functionality of the generated code from
+        // serde. However the generated code has issues with lifetime inference and must
+        // be implemented manually until fixed.
+        //
+        // #[derive(Deserialize)]
+        // #[serde(deny_unknown_fields)]
+        // pub struct GatewayPayload<'a> {
+        //     #[serde(rename = "op")]
+        //     pub opcode: VoiceOpCode,
+        //     #[serde(borrow)]
+        //     #[serde(rename = "d")]
+        //     pub data: Content<'a>,
+        // }
+        impl<'de: 'a, 'a> Deserialize<'de> for GatewayPayload<'a> {
+            fn deserialize<D>(deserializer: D) -> StdResult<Self, D::Error>
+                where
+                    D: Deserializer<'de>
+            {
+                #[derive(Deserialize)]
+                #[serde(field_identifier)]
+                enum Field {
+                    #[serde(rename = "op")]
+                    OpCode,
+                    #[serde(rename = "d")]
+                    Data,
+                }
 
-        let v = map.remove("d")
-            .ok_or_else(|| DeError::custom("expected voice gateway payload"))
-            .and_then(Value::deserialize)
-            .map_err(DeError::custom)?;
+                struct GatewayPayloadVisitor<'de: 'a, 'a> {
+                    marker: PhantomData<GatewayPayload<'a>>,
+                    lifetime: PhantomData<&'de ()>,
+                }
 
-        Ok(match op {
-            VoiceOpCode::HeartbeatAck => {
-                let v = serde_json::from_value(v).map_err(DeError::custom)?;
+                impl<'de: 'a, 'a> Visitor<'de> for GatewayPayloadVisitor<'de, 'a> {
+                    type Value = GatewayPayload<'a>;
 
-                VoiceEvent::HeartbeatAck(v)
-            },
-            VoiceOpCode::Ready => {
-                let v = VoiceReady::deserialize(v).map_err(DeError::custom)?;
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("struct GatewayPayload")
+                    }
 
-                VoiceEvent::Ready(v)
-            },
-            VoiceOpCode::Hello => {
-                let v = serde_json::from_value(v).map_err(DeError::custom)?;
+                    fn visit_map<V>(self, mut map: V) -> StdResult<Self::Value, V::Error>
+                        where
+                            V: MapAccess<'de>,
+                    {
+                        let mut opcode = None;
+                        let mut data = None;
+                        while let Some(key) = map.next_key()? {
+                            match key {
+                                Field::OpCode => {
+                                    if opcode.is_some() {
+                                        return Err(de::Error::duplicate_field("op"));
+                                    }
+                                    opcode = Some(map.next_value()?);
+                                }
+                                Field::Data => {
+                                    if data.is_some() {
+                                        return Err(de::Error::duplicate_field("d"));
+                                    }
+                                    data = Some(map.next_value()?);
+                                }
+                            }
+                        }
+                        let opcode = opcode.ok_or_else(|| de::Error::missing_field("op"))?;
+                        let data = data.ok_or_else(|| de::Error::missing_field("d"))?;
 
-                VoiceEvent::Hello(v)
-            },
-            VoiceOpCode::SessionDescription => {
-                let v = VoiceSessionDescription::deserialize(v)
-                    .map_err(DeError::custom)?;
+                        Ok(GatewayPayload { opcode, data })
+                    }
+                }
 
-                VoiceEvent::SessionDescription(v)
-            },
-            VoiceOpCode::Speaking => {
-                let v = VoiceSpeaking::deserialize(v).map_err(DeError::custom)?;
+                const FIELDS: &[&str] = &["op", "d", ];
+                deserializer.deserialize_struct("GatewayPayload", FIELDS, GatewayPayloadVisitor { marker: PhantomData::<GatewayPayload<'a>>, lifetime: PhantomData })
+            }
+        }
 
-                VoiceEvent::Speaking(v)
-            },
-            VoiceOpCode::Resumed => VoiceEvent::Resumed,
-            VoiceOpCode::ClientConnect => {
-                let v = VoiceClientConnect::deserialize(v).map_err(DeError::custom)?;
+        struct VoiceEventVisitor {
+            opcode: VoiceOpCode,
+        }
 
-                VoiceEvent::ClientConnect(v)
-            },
-            VoiceOpCode::ClientDisconnect => {
-                let v = VoiceClientDisconnect::deserialize(v).map_err(DeError::custom)?;
+        impl VoiceEventVisitor {
+            pub fn new(opcode: VoiceOpCode) -> Self {
+                VoiceEventVisitor { opcode }
+            }
+        }
 
-                VoiceEvent::ClientDisconnect(v)
-            },
-            other => VoiceEvent::Unknown(other, v),
-        })
+        impl<'de> DeserializeSeed<'de> for VoiceEventVisitor {
+            type Value = VoiceEvent;
+
+            fn deserialize<D>(self, deserializer: D) -> StdResult<Self::Value, D::Error>
+                where
+                    D: Deserializer<'de>,
+            {
+                Ok(match self.opcode {
+                    VoiceOpCode::HeartbeatAck => {
+                        VoiceEvent::HeartbeatAck(VoiceHeartbeatAck::deserialize(deserializer)?)
+                    }
+                    VoiceOpCode::Ready => {
+                        VoiceEvent::Ready(VoiceReady::deserialize(deserializer)?)
+                    }
+                    VoiceOpCode::Hello => {
+                        VoiceEvent::Hello(VoiceHello::deserialize(deserializer)?)
+                    }
+                    VoiceOpCode::SessionDescription => {
+                        VoiceEvent::SessionDescription(VoiceSessionDescription::deserialize(deserializer)?)
+                    }
+                    VoiceOpCode::Speaking => {
+                        VoiceEvent::Speaking(VoiceSpeaking::deserialize(deserializer)?)
+                    }
+                    VoiceOpCode::Resumed => VoiceEvent::Resumed,
+                    VoiceOpCode::ClientConnect => {
+                        VoiceEvent::ClientConnect(VoiceClientConnect::deserialize(deserializer)?)
+                    }
+                    VoiceOpCode::ClientDisconnect => {
+                        VoiceEvent::ClientDisconnect(VoiceClientDisconnect::deserialize(deserializer)?)
+                    }
+                    other => VoiceEvent::Unknown(other, Value::deserialize(deserializer)?),
+                })
+            }
+        }
+
+        let GatewayPayload { opcode, data } = GatewayPayload::deserialize(deserializer)?;
+
+        let visitor = VoiceEventVisitor::new(opcode);
+        visitor.deserialize(ContentDeserializer::new(data))
     }
 }

@@ -537,7 +537,7 @@ impl Shard {
                     ShardAction::Reconnect(self.reconnection_type())
                 }))
             },
-            Ok(GatewayEvent::InvalidateSession(resumable)) => {
+            Ok(GatewayEvent::InvalidSession(resumable)) => {
                 info!(
                     "[Shard {:?}] Received session invalidation",
                     self.shard_info,
