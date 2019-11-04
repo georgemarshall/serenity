@@ -1,11 +1,10 @@
 //! Models pertaining to the gateway.
 
 use parking_lot::RwLock;
-use serde::de::Error as DeError;
+use serde::de::{self, DeserializeSeed, MapAccess};
 use serde::ser::{SerializeStruct, Serialize, Serializer};
-use serde_json;
 use serde_repr::{Serialize_repr, Deserialize_repr};
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 use super::utils::*;
 use super::prelude::*;
 use bitflags::bitflags;
@@ -31,7 +30,7 @@ pub struct BotGateway {
 }
 
 /// Representation of an activity that a [`User`] is performing.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Activity {
     /// The ID of the application for the activity.
     pub application_id: Option<ApplicationId>,
@@ -61,7 +60,7 @@ pub struct Activity {
     /// [`ActivityType::Streaming`]: enum.ActivityType.html#variant.Streaming
     /// [`kind`]: #structfield.kind
     pub url: Option<String>,
-    #[serde(skip_serializing)]
+    #[serde(skip)]
     pub(crate) _nonexhaustive: (),
 }
 
@@ -206,74 +205,6 @@ impl Activity {
     }
 }
 
-impl<'de> Deserialize<'de> for Activity {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Self, D::Error> {
-        let mut map = JsonMap::deserialize(deserializer)?;
-        let application_id = match map.remove("application_id") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let assets = match map.remove("assets") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let details = match map.remove("details") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let flags = match map.remove("flags") {
-            Some(v) => serde_json::from_value::<Option<u64>>(v)
-                .map_err(DeError::custom)?
-                .map(ActivityFlags::from_bits_truncate),
-            None => None,
-        };
-        let instance = match map.remove("instance") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let kind = map.remove("type")
-            .and_then(|v| ActivityType::deserialize(v).ok())
-            .unwrap_or(ActivityType::Playing);
-        let name = map.remove("name")
-            .and_then(|v| String::deserialize(v).ok())
-            .unwrap_or_else(String::new);
-        let party = match map.remove("party") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let secrets = match map.remove("secrets") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let state = match map.remove("state") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let timestamps = match map.remove("timestamps") {
-            Some(v) => serde_json::from_value::<Option<_>>(v).map_err(DeError::custom)?,
-            None => None,
-        };
-        let url = map.remove("url")
-            .and_then(|v| serde_json::from_value::<String>(v).ok());
-
-        Ok(Activity {
-            application_id,
-            assets,
-            details,
-            flags,
-            instance,
-            kind,
-            name,
-            party,
-            secrets,
-            state,
-            timestamps,
-            url,
-            _nonexhaustive: (),
-        })
-    }
-}
-
 /// The assets for an activity.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ActivityAssets {
@@ -387,68 +318,185 @@ pub struct Presence {
 }
 
 impl<'de> Deserialize<'de> for Presence {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> StdResult<Presence, D::Error> {
-        let mut map = JsonMap::deserialize(deserializer)?;
-        let mut user_map = map.remove("user")
-            .ok_or_else(|| DeError::custom("expected presence user"))
-            .and_then(JsonMap::deserialize)
-            .map_err(DeError::custom)?;
+    fn deserialize<D>(deserializer: D) -> StdResult<Presence, D::Error>
+        where
+            D: Deserializer<'de>
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier)]
+        #[serde(rename_all = "snake_case")]
+        enum UserField {
+            Id,
+            Avatar,
+            Bot,
+            Discriminator,
+            Username,
+        }
 
-        let (user_id, user) = if user_map.len() > 1 {
-            let user = User::deserialize(Value::Object(user_map))
-                .map_err(DeError::custom)?;
+        struct UserVisitor;
 
-            (user.id, Some(Arc::new(RwLock::new(user))))
-        } else {
-            let user_id = user_map
-                .remove("id")
-                .ok_or_else(|| DeError::custom("Missing presence user id"))
-                .and_then(UserId::deserialize)
-                .map_err(DeError::custom)?;
+        impl<'de> DeserializeSeed<'de> for UserVisitor {
+            type Value = (UserId, Option<Arc<RwLock<User>>>);
 
-            (user_id, None)
-        };
+            fn deserialize<D>(self, deserializer: D) -> StdResult<Self::Value, D::Error>
+                where
+                    D: Deserializer<'de>
+            {
+                deserializer.deserialize_any(self)
+            }
+        }
 
-        let activity = match map.remove("game") {
-            Some(v) => serde_json::from_value::<Option<Activity>>(v)
-                .map_err(DeError::custom)?,
-            None => None,
-        };
-        let last_modified = match map.remove("last_modified") {
-            Some(v) => serde_json::from_value::<Option<u64>>(v)
-                .map_err(DeError::custom)?,
-            None => None,
-        };
-        let nick = match map.remove("nick") {
-            Some(v) => serde_json::from_value::<Option<String>>(v)
-                .map_err(DeError::custom)?,
-            None => None,
-        };
-        let status = map.remove("status")
-            .ok_or_else(|| DeError::custom("expected presence status"))
-            .and_then(OnlineStatus::deserialize)
-            .map_err(DeError::custom)?;
+        impl<'de> Visitor<'de> for UserVisitor {
+            type Value = (UserId, Option<Arc<RwLock<User>>>);
 
-        Ok(Presence {
-            activity,
-            last_modified,
-            nick,
-            status,
-            user,
-            user_id,
-            _nonexhaustive: (),
-        })
+            fn expecting(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt.write_str("struct User")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> StdResult<Self::Value, M::Error>
+                where
+                    M: MapAccess<'de>,
+            {
+                let mut id = None;
+                let mut avatar = None;
+                let mut bot = None;
+                let mut discriminator = None;
+                let mut name = None;
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        UserField::Id => {
+                            if id.is_some() {
+                                return Err(de::Error::duplicate_field("id"));
+                            }
+                            id = Some(map.next_value()?);
+                        }
+                        UserField::Avatar => {
+                            if avatar.is_some() {
+                                return Err(de::Error::duplicate_field("avatar"));
+                            }
+                            avatar = Some(map.next_value()?);
+                        }
+                        UserField::Bot => {
+                            if bot.is_some() {
+                                return Err(de::Error::duplicate_field("bot"));
+                            }
+                            bot = Some(map.next_value()?);
+                        }
+                        UserField::Discriminator => {
+                            if discriminator.is_some() {
+                                return Err(de::Error::duplicate_field("discriminator"));
+                            }
+                            discriminator = Some(map.next_value()?);
+                        }
+                        UserField::Username => {
+                            if name.is_some() {
+                                return Err(de::Error::duplicate_field("username"));
+                            }
+                            name = Some(map.next_value()?);
+                        }
+                    }
+                }
+                let id = id.ok_or_else(|| de::Error::missing_field("id"))?;
+                let bot = bot.unwrap_or_default();
+
+                if let (Some(d), Some(n)) = (discriminator, name) {
+                    Ok((id, Some(Arc::new(RwLock::new(User {
+                        id,
+                        avatar,
+                        bot,
+                        discriminator: d,
+                        name: n,
+                        _nonexhaustive: (),
+                    })))))
+                } else {
+                    Ok((id, None))
+                }
+            }
+        }
+
+        #[derive(Deserialize)]
+        #[serde(field_identifier)]
+        #[serde(rename_all = "snake_case")]
+        enum Field {
+            User,
+            Game,
+            LastModified,
+            Nick,
+            Status,
+        }
+
+        struct PresenceVisitor;
+
+        impl<'de> Visitor<'de> for PresenceVisitor {
+            type Value = Presence;
+
+            fn expecting(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt.write_str("struct Presence")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> StdResult<Self::Value, M::Error>
+                where
+                    M: MapAccess<'de>,
+            {
+                let mut user_id = None;
+                let mut user = None;
+                let mut activity = None;
+                let mut last_modified = None;
+                let mut nick = None;
+                let mut status = None;
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::User => {
+                            if user.is_some() {
+                                return Err(de::Error::duplicate_field("user"));
+                            }
+                            let (uid, u) = map.next_value_seed(UserVisitor)?;
+                            user_id = Some(uid);
+                            user = u;
+                        }
+                        Field::Game => {
+                            if activity.is_some() {
+                                return Err(de::Error::duplicate_field("game"));
+                            }
+                            activity = Some(map.next_value()?);
+                        }
+                        Field::LastModified => {
+                            if last_modified.is_some() {
+                                return Err(de::Error::duplicate_field("last_modified"));
+                            }
+                            last_modified = Some(map.next_value()?);
+                        }
+                        Field::Nick => {
+                            if nick.is_some() {
+                                return Err(de::Error::duplicate_field("nick"));
+                            }
+                            nick = Some(map.next_value()?);
+                        }
+                        Field::Status => {
+                            if status.is_some() {
+                                return Err(de::Error::duplicate_field("status"));
+                            }
+                            status = Some(map.next_value()?);
+                        }
+                    }
+                }
+                let status = status.ok_or_else(|| de::Error::missing_field("status"))?;
+                let user_id = user_id.ok_or_else(|| de::Error::missing_field("user_id"))?;
+
+                Ok(Presence { activity, last_modified, nick, status, user_id, user, _nonexhaustive: () })
+            }
+        }
+
+        const FIELDS: &[&str] = &["user", "game", "last_modified", "nick", "status"];
+        deserializer.deserialize_struct("Presence", FIELDS, PresenceVisitor)
     }
 }
 
 impl Serialize for Presence {
     fn serialize<S>(&self, serializer: S) -> StdResult<S::Ok, S::Error>
-        where S: Serializer {
-        #[derive(Serialize)]
-        struct UserId {
-            id: u64,
-        }
-
+        where
+            S: Serializer
+    {
         let mut state = serializer.serialize_struct("Presence", 5)?;
         state.serialize_field("game", &self.activity)?;
         state.serialize_field("last_modified", &self.last_modified)?;
@@ -458,9 +506,10 @@ impl Serialize for Presence {
         if let Some(ref user) = self.user {
             state.serialize_field("user", &*user.read())?;
         } else {
-            state.serialize_field("user", &UserId {
-                id: self.user_id.0,
-            })?;
+            let mut map = HashMap::new();
+            map.insert("id", &self.user_id);
+
+            state.serialize_field("user", &map)?;
         }
 
         state.end()
